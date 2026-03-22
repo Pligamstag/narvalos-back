@@ -1,49 +1,47 @@
 /**
  * middleware/authMiddleware.js
- * Middleware de protection des routes admin.
- * Vérifie la présence et la validité du JWT dans le header Authorization.
+ * Vérifie les tokens Firebase sur les routes protégées.
  */
 
-const jwt   = require('jsonwebtoken');
-const Admin = require('../models/Admin');
+const ADMIN_EMAILS = [
+  'samyfoot51@gmail.com',
+  'vyrdox@gmail.com',
+  'lulummix30@kitoy.me',
+  'zaynebdeschassagnes@gmail.com',
+];
 
-const JWT_SECRET = process.env.JWT_SECRET || 'changez_ce_secret_en_prod_!!!';
+function decodeFirebaseToken(token) {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch { return null; }
+}
 
-/**
- * Middleware `protect` :
- * Vérifie le token JWT et attache l'admin au request.
- * Usage : router.post('/route-protégée', protect, handler)
- */
 const protect = async (req, res, next) => {
   let token;
-
-  // Le token doit être envoyé dans le header : Authorization: Bearer <token>
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+  if (req.headers.authorization?.startsWith('Bearer ')) {
     token = req.headers.authorization.split(' ')[1];
   }
+  if (!token) return res.status(401).json({ message: 'Non autorisé.' });
 
-  if (!token) {
-    return res.status(401).json({ message: 'Non autorisé. Token manquant.' });
+  const decoded = decodeFirebaseToken(token);
+  if (!decoded?.email) return res.status(401).json({ message: 'Token invalide.' });
+  if (decoded.exp && decoded.exp < Date.now() / 1000) {
+    return res.status(401).json({ message: 'Session expirée.' });
   }
 
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-
-    // Vérifier que l'admin existe encore en base
-    const admin = await Admin.findById(decoded.id).select('-password');
-    if (!admin) {
-      return res.status(401).json({ message: 'Admin introuvable. Reconnectez-vous.' });
-    }
-
-    req.admin = { id: admin._id, username: admin.username };
-    next();
-
-  } catch (err) {
-    if (err.name === 'TokenExpiredError') {
-      return res.status(401).json({ message: 'Session expirée. Veuillez vous reconnecter.' });
-    }
-    return res.status(401).json({ message: 'Token invalide.' });
+  const email = decoded.email.toLowerCase();
+  if (!ADMIN_EMAILS.includes(email)) {
+    return res.status(403).json({ message: 'Accès refusé.' });
   }
+
+  req.admin = {
+    email:    decoded.email,
+    username: decoded.name || email.split('@')[0],
+    uid:      decoded.user_id || decoded.sub,
+  };
+  next();
 };
 
 module.exports = { protect };
