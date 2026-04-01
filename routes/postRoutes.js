@@ -1,165 +1,161 @@
 /**
  * routes/postRoutes.js
- * CRUD complet pour les posts du blog.
+ * CRUD posts + suppression en cascade + vues uniques
  */
-
-const express  = require('express');
-const Post     = require('../models/Post');
-const { protect } = require('../middleware/authMiddleware'); // ← nom mis à jour
+const express = require('express');
+const Post    = require('../models/Post');
+const Comment = require('../models/Comment');
+const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-/* GET /api/posts */
+/* ── GET tous les posts ── */
 router.get('/', async (req, res) => {
   try {
-    const {
-      page     = 1,
-      limit    = 9,
-      sort     = '-publishedAt',
-      category,
-      search,
-    } = req.query;
-
+    const { page = 1, limit = 9, category, sort = '-publishedAt' } = req.query;
     const filter = {};
-
-    const isAdmin = req.headers.authorization?.startsWith('Bearer');
-    if (!isAdmin) {
-      filter.publishedAt = { $lte: new Date() };
-    }
-
-    if (category && category !== 'all') {
-      filter.category = category;
-    }
-
-    if (search) {
-      filter.$or = [
-        { title:   { $regex: search, $options: 'i' } },
-        { author:  { $regex: search, $options: 'i' } },
-        { summary: { $regex: search, $options: 'i' } },
-      ];
-    }
+    if (category && category !== 'all') filter.category = category;
+    filter.publishedAt = { $lte: new Date() };
 
     const total = await Post.countDocuments(filter);
     const posts = await Post.find(filter)
       .sort(sort)
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit))
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
       .select('-content');
 
-    res.json({ posts, total, page: Number(page), limit: Number(limit) });
-
+    res.json({ posts, total, page: parseInt(page), limit: parseInt(limit) });
   } catch (err) {
-    console.error('GET /posts error:', err);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
 
-/* GET /api/posts/:id */
+/* ── GET un post par ID + incrémenter les vues ── */
 router.get('/:id', async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
-
-    if (!post) {
-      return res.status(404).json({ message: 'Post introuvable.' });
-    }
-
-    const isAdmin = req.headers.authorization?.startsWith('Bearer');
-    if (!isAdmin && post.publishedAt > new Date()) {
-      return res.status(404).json({ message: 'Post introuvable.' });
-    }
-
+    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
     res.json(post);
-
   } catch (err) {
-    if (err.name === 'CastError') {
-      return res.status(404).json({ message: 'Post introuvable.' });
-    }
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
 
-/* POST /api/posts */
+/* ── POST incrémenter les vues (vue unique par session) ── */
+router.post('/:id/view', async (req, res) => {
+  try {
+    const post = await Post.findByIdAndUpdate(
+      req.params.id,
+      { $inc: { views: 1 } },
+      { new: true }
+    );
+    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
+
+    // Broadcast views via WebSocket
+    const io = req.app.get('io');
+    if (io) io.to('post_' + req.params.id).emit('view_update', { postId: req.params.id, views: post.views });
+
+    res.json({ views: post.views });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur.' });
+  }
+});
+
+/* ── POST ajouter/retirer une réaction ── */
+router.post('/:id/react', async (req, res) => {
+  const { emoji, uid } = req.body;
+  if (!emoji || !uid) return res.status(400).json({ message: 'Données manquantes.' });
+
+  try {
+    const post = await Post.findById(req.params.id);
+    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
+
+    const reactions    = post.reactions || new Map();
+    const reactors     = post.reactors  || new Map();
+    const userKey      = uid + '_' + emoji;
+    const hasReacted   = (reactors.get ? reactors.get(userKey) : reactors[userKey]) || false;
+
+    if (hasReacted) {
+      const count = Math.max(0, (reactions.get ? reactions.get(emoji) : reactions[emoji] || 0) - 1);
+      post.reactions.set(emoji, count);
+      post.reactors.set(userKey, false);
+    } else {
+      const count = (reactions.get ? reactions.get(emoji) : reactions[emoji] || 0) + 1;
+      post.reactions.set(emoji, count);
+      post.reactors.set(userKey, true);
+    }
+
+    await post.save();
+
+    const reactionsObj = {};
+    post.reactions.forEach((v, k) => { reactionsObj[k] = v; });
+
+    // Broadcast réactions via WebSocket
+    const io = req.app.get('io');
+    if (io) {
+      io.to('post_' + req.params.id).emit('reaction_update', {
+        postId: req.params.id,
+        reactions: reactionsObj,
+        emoji, uid, reacted: !hasReacted
+      });
+      io.emit('reaction_update_global', { postId: req.params.id, reactions: reactionsObj });
+    }
+
+    res.json({ reactions: reactionsObj, reacted: !hasReacted });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur.' });
+  }
+});
+
+/* ── POST créer un post ── */
 router.post('/', protect, async (req, res) => {
   try {
     const { title, author, category, summary, content, publishedAt } = req.body;
-
-    const post = new Post({
-      title, author, category, summary, content,
-      publishedAt: publishedAt || new Date(),
-    });
-
-    await post.save();
-    res.status(201).json(post);
-
-  } catch (err) {
-    if (err.name === 'ValidationError') {
-      const messages = Object.values(err.errors).map(e => e.message).join(', ');
-      return res.status(400).json({ message: messages });
+    if (!title || !author || !category || !summary || !content) {
+      return res.status(400).json({ message: 'Champs obligatoires manquants.' });
     }
-    res.status(500).json({ message: 'Erreur serveur.' });
+    const post = await Post.create({ title, author, category, summary, content, publishedAt });
+
+    // Broadcast nouveau post
+    const io = req.app.get('io');
+    if (io) io.emit('post_published', { post });
+
+    res.status(201).json(post);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
 });
 
-/* PUT /api/posts/:id */
+/* ── PUT modifier un post ── */
 router.put('/:id', protect, async (req, res) => {
   try {
     const { title, author, category, summary, content, publishedAt } = req.body;
-
     const post = await Post.findByIdAndUpdate(
       req.params.id,
       { title, author, category, summary, content, publishedAt },
       { new: true, runValidators: true }
     );
-
-    if (!post) {
-      return res.status(404).json({ message: 'Post introuvable.' });
-    }
-
+    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
     res.json(post);
-
   } catch (err) {
-    if (err.name === 'ValidationError') {
-      const messages = Object.values(err.errors).map(e => e.message).join(', ');
-      return res.status(400).json({ message: messages });
-    }
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
 
-/* DELETE /api/posts/:id */
+/* ── DELETE supprimer un post + ses commentaires (cascade) ── */
 router.delete('/:id', protect, async (req, res) => {
   try {
     const post = await Post.findByIdAndDelete(req.params.id);
-
-    if (!post) {
-      return res.status(404).json({ message: 'Post introuvable.' });
-    }
-
-    res.json({ message: 'Post supprimé avec succès.', id: req.params.id });
-
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.' });
-  }
-});
-
-/* POST /api/posts/:id/like */
-router.post('/:id/like', async (req, res) => {
-  try {
-    const ip      = req.ip || 'unknown';
-    const likerId = Buffer.from(ip).toString('base64');
-
-    const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: 'Post introuvable.' });
 
-    if (post.likes.includes(likerId)) {
-      post.likes = post.likes.filter(l => l !== likerId);
-    } else {
-      post.likes.push(likerId);
-    }
+    // Suppression en cascade des commentaires
+    await Comment.deleteMany({ postId: req.params.id });
 
-    await post.save();
-    res.json({ likes: post.likes.length, liked: post.likes.includes(likerId) });
+    // Broadcast suppression
+    const io = req.app.get('io');
+    if (io) io.emit('post_deleted', { postId: req.params.id });
 
+    res.json({ message: 'Post et commentaires supprimés.' });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.' });
   }
