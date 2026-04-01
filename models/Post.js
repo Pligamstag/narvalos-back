@@ -1,5 +1,6 @@
 /**
  * models/Post.js
+ * Avec vues, réactions par emoji et réacteurs (pour éviter double réaction)
  */
 const mongoose = require('mongoose');
 
@@ -12,6 +13,7 @@ const PostSchema = new mongoose.Schema({
   publishedAt: { type: Date, default: Date.now },
   views:       { type: Number, default: 0 },
   reactions:   { type: Map, of: Number, default: {} },
+  reactors:    { type: Map, of: Boolean, default: {} }, // uid_emoji → true/false
 }, { timestamps: true, versionKey: false });
 
 PostSchema.index({ publishedAt: -1 });
