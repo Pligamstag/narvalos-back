@@ -1,16 +1,6 @@
 /**
  * routes/profileRoutes.js
- * Gestion des profils publics des auteurs.
- *
- * Public :
- *   GET  /api/profiles            — liste tous les profils
- *   GET  /api/profiles/:username  — profil d'un auteur
- *
- * Protégé (admin) :
- *   PUT  /api/profiles/me         — modifier son propre profil
- *
- * ⚠️ IMPORTANT : la route PUT /me doit être déclarée AVANT GET /:username
- *    sinon Express interprète "me" comme un :username et renvoie 404.
+ * Ajout d'une route /seed pour créer les profils admin
  */
 
 const express = require('express');
@@ -19,7 +9,41 @@ const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-/* GET /api/profiles */
+// ⭐ ROUTE TEMPORAIRE À AJOUTER (à supprimer après utilisation)
+router.post('/seed', async (req, res) => {
+  const adminEmails = [
+    'samyfoot51@gmail.com',
+    'vyrdox@gmail.com', 
+    'lulummix30@kitoy.me',
+    'zaynebdeschassagnes@gmail.com'
+  ];
+  
+  const results = [];
+  
+  for (const email of adminEmails) {
+    const username = email.split('@')[0].toLowerCase();
+    const exists = await Profile.findOne({ username });
+    
+    if (!exists) {
+      const profile = await Profile.create({
+        username: username,
+        firstName: username.charAt(0).toUpperCase() + username.slice(1),
+        pseudo: username,
+        quote: "Membre des Narvalos 🌀",
+        passions: ["Narvalos", "Écriture"],
+        links: {}
+      });
+      results.push({ username, status: 'créé', profile });
+      console.log(`✅ Profil créé: ${username}`);
+    } else {
+      results.push({ username, status: 'existe déjà' });
+    }
+  }
+  
+  res.json({ message: 'Seed terminé', results });
+});
+
+// GET /api/profiles
 router.get('/', async (req, res) => {
   try {
     const profiles = await Profile.find().select('-__v');
@@ -29,47 +53,44 @@ router.get('/', async (req, res) => {
   }
 });
 
-/* PUT /api/profiles/me — Modifier son propre profil
- * ✅ Déclaré AVANT /:username pour éviter le conflit de routing */
-router.put('/me', protect, async (req, res) => {
-  const {
-    firstName, pseudo, bio, quote, avatar,
-    nationality, origin, dreamCountry, passions, links,
-  } = req.body;
-
-  // username = partie avant @ de l'email (ex: "samyfoot51")
-  const username = req.admin.username;
-
+// GET /api/profiles/:username
+router.get('/:username', async (req, res) => {
   try {
-    const profile = await Profile.findOneAndUpdate(
-      { username },
-      {
-        username, // s'assurer qu'il est bien défini à la création (upsert)
-        firstName, pseudo, bio, quote, avatar,
-        nationality, origin, dreamCountry, passions, links,
-      },
-      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
-    );
+    console.log('🔍 Recherche profil:', req.params.username);
+    const profile = await Profile.findOne({ username: req.params.username.toLowerCase() });
+    if (!profile) {
+      console.log('❌ Profil non trouvé:', req.params.username);
+      return res.status(404).json({ message: 'Profil introuvable.' });
+    }
     res.json(profile);
   } catch (err) {
-    if (err.name === 'ValidationError') {
-      const msg = Object.values(err.errors).map(e => e.message).join(', ');
-      return res.status(400).json({ message: msg });
-    }
-    console.error('Profile save error:', err);
+    console.error('Erreur GET profil:', err);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
 
-/* GET /api/profiles/:username */
-router.get('/:username', async (req, res) => {
+// PUT /api/profiles/me
+router.put('/me', protect, async (req, res) => {
+  const { firstName, pseudo, bio, quote, avatar, nationality, dreamCountry, passions, links, username } = req.body;
+  
   try {
-    const profile = await Profile.findOne({
-      username: req.params.username.toLowerCase(),
-    });
-    if (!profile) return res.status(404).json({ message: 'Profil introuvable.' });
+    // Utiliser le username de l'admin connecté ou celui fourni
+    const profileUsername = username || req.admin.username;
+    
+    const profile = await Profile.findOneAndUpdate(
+      { username: profileUsername.toLowerCase() },
+      { firstName, pseudo, bio, quote, avatar, nationality, dreamCountry, passions, links, username: profileUsername.toLowerCase() },
+      { new: true, upsert: true, runValidators: true }
+    );
+    
+    console.log('✅ Profil sauvegardé:', profile.username);
     res.json(profile);
   } catch (err) {
+    console.error('Erreur PUT profil:', err);
+    if (err.name === 'ValidationError') {
+      const msg = Object.values(err.errors).map(e => e.message).join(', ');
+      return res.status(400).json({ message: msg });
+    }
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
