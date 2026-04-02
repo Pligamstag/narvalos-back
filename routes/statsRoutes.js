@@ -1,11 +1,12 @@
 /**
  * routes/statsRoutes.js
- * Stats globales — commentaires, membres Firebase, réactions
+ * Stats globales --- commentaires, membres Firebase, réactions
  */
+
 const express = require('express');
-const Post    = require('../models/Post');
+const Post = require('../models/Post');
 const Comment = require('../models/Comment');
-const router  = express.Router();
+const router = express.Router();
 
 // Compteur online (partagé avec server.js via app)
 router.get('/', async (req, res) => {
@@ -16,7 +17,7 @@ router.get('/', async (req, res) => {
     ]);
 
     // Vues totales
-    const postsData  = await Post.find({}, 'views reactions');
+    const postsData = await Post.find({}, 'views reactions');
     const totalViews = postsData.reduce((sum, p) => sum + (p.views || 0), 0);
 
     // Réactions agrégées
@@ -29,7 +30,7 @@ router.get('/', async (req, res) => {
       }
     });
 
-    // Online count depuis app
+    // Online count depuis app (CORRIGÉ)
     const onlineNow = req.app.get('onlineUsers') || 0;
 
     res.json({
@@ -40,6 +41,7 @@ router.get('/', async (req, res) => {
       onlineNow,
     });
   } catch (err) {
+    console.error('Stats error:', err);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
