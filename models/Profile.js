@@ -14,6 +14,7 @@ const ProfileSchema = new mongoose.Schema({
   origin:      { type: String, default: '' },
   dreamCountry:{ type: String, default: '' },
   passions:    [String],
+  displayMode: { type: String, default: 'firstName', enum: ['firstName', 'pseudo', 'both'] },
   links: {
     instagram: { type: String, default: '' },
     spotify:   { type: String, default: '' },
