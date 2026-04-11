@@ -6,7 +6,6 @@ const Profile = require('../models/Profile');
 const { protect } = require('../middleware/authMiddleware');
 const router = express.Router();
 
-// GET /api/profiles
 router.get('/', async (req, res) => {
   try {
     const profiles = await Profile.find().select('-__v');
@@ -16,7 +15,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/profiles/:username
 router.get('/:username', async (req, res) => {
   try {
     const profile = await Profile.findOne({ username: req.params.username.toLowerCase() });
@@ -27,28 +25,26 @@ router.get('/:username', async (req, res) => {
   }
 });
 
-// PUT /api/profiles/me
 router.put('/me', protect, async (req, res) => {
   const {
     firstName, pseudo, bio, quote, avatar,
     nationality, origin, dreamCountry,
-    passions, links, username
+    passions, links, username,
+    displayMode  // 'firstName' | 'pseudo' | 'both'
   } = req.body;
 
   try {
     const profileUsername = (username || req.admin.username).toLowerCase();
-
     const profile = await Profile.findOneAndUpdate(
       { username: profileUsername },
       {
         firstName, pseudo, bio, quote, avatar,
         nationality, origin, dreamCountry,
-        passions, links,
+        passions, links, displayMode,
         username: profileUsername
       },
       { new: true, upsert: true, runValidators: false }
     );
-
     res.json(profile);
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.' });
