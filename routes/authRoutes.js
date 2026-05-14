@@ -90,4 +90,31 @@ router.put('/password', protect, async (req, res) => {
   }
 });
 
+/**
+ * DELETE /api/auth/admin/:username
+ * Supprime un admin par son username. Requiert d'être authentifié.
+ * Un admin ne peut pas se supprimer lui-même.
+ */
+router.delete('/admin/:username', protect, async (req, res) => {
+  const { username } = req.params;
+
+  if (req.admin.username === username) {
+    return res.status(400).json({ message: 'Vous ne pouvez pas vous supprimer vous-même.' });
+  }
+
+  try {
+    const deleted = await Admin.findOneAndDelete({ username: username.trim() });
+
+    if (!deleted) {
+      return res.status(404).json({ message: `Admin "${username}" introuvable.` });
+    }
+
+    res.json({ message: `Admin "${username}" supprimé avec succès.` });
+
+  } catch (err) {
+    console.error('Delete admin error:', err);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+});
+
 module.exports = router;
