@@ -33,7 +33,6 @@ AdminSchema.statics.seedDefaults = async function () {
     { username: 'Samy', password: 'SamSamELPligamstag455108' },  // ← CHANGER
     { username: 'Lucie', password: '1234' },  // ← CHANGER
     { username: 'Killian', password: '1234' },  // ← CHANGER
-    { username: 'Zayneb', password: '1234' },  // ← CHANGER
   ];
 
   for (const d of defaults) {
