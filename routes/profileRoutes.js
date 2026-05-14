@@ -35,4 +35,12 @@ router.put('/me', protect, async (req, res) => {
   } catch { res.status(500).json({ message: 'Erreur.' }); }
 });
 
+router.delete('/:username', protect, async (req, res) => {
+  try {
+    const deleted = await Profile.findOneAndDelete({ username: req.params.username.toLowerCase() });
+    if (!deleted) return res.status(404).json({ message: 'Profil introuvable.' });
+    res.json({ message: `Profil "${req.params.username}" supprime.` });
+  } catch { res.status(500).json({ message: 'Erreur.' }); }
+});
+
 module.exports = router;
