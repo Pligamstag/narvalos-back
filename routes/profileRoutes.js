@@ -43,10 +43,5 @@ router.delete('/:username', protect, async (req, res) => {
   } catch { res.status(500).json({ message: 'Erreur.' }); }
 });
 
-router.get'/admin', async (req, res) => {
-  try {
-    res.render('admin');
-  } catch { res.status(500).json({ message: 'Erreur.' }); }
-});
 
 module.exports = router;
