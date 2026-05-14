@@ -7,6 +7,7 @@ const path = require('path');
 const http = require('http');
 const { Server } = require('socket.io');
 
+const authRoutes = require('./routes/authRoutes');
 const postRoutes = require('./routes/postRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const commentRoutes = require('./routes/commentRoutes');
@@ -41,6 +42,7 @@ app.use(express.static(path.join(__dirname, './')));
 app.set('io', io);
 
 // Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/posts', postRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/comments', commentRoutes);
