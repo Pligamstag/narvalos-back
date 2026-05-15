@@ -4,17 +4,19 @@
  */
 const mongoose = require('mongoose');
 
-const PostSchema = new mongoose.Schema({
-  title:       { type: String, required: true, trim: true },
-  author:      { type: String, required: true, trim: true },
-  category:    { type: String, required: true, enum: ['anecdote','poeme','journee','autre'] },
-  summary:     { type: String, required: true, trim: true, maxlength: 300 },
-  content:     { type: String, required: true },
+const postSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  author: { type: String, required: true },
+  authorEmail: { type: String },  // ← AJOUTE
+  authorId: { type: String },      // ← AJOUTE
+  category: { type: String, required: true },
+  summary: { type: String, required: true },
+  content: { type: String, required: true },
   publishedAt: { type: Date, default: Date.now },
-  views:       { type: Number, default: 0 },
-  reactions:   { type: Map, of: Number, default: {} },
-  reactors:    { type: Map, of: Boolean, default: {} }, // uid_emoji → true/false
-}, { timestamps: true, versionKey: false });
+  views: { type: Number, default: 0 },
+  reactions: { type: Object, default: {} },
+  reactors: { type: Object, default: {} }
+}, { timestamps: true });
 
 PostSchema.index({ publishedAt: -1 });
 PostSchema.index({ category: 1 });
