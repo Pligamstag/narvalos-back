@@ -145,9 +145,25 @@ router.put('/:id', protect, async (req, res) => {
 /* ── DELETE supprimer un post + ses commentaires (cascade) ── */
 router.delete('/:id', protect, async (req, res) => {
   try {
-    const post = await Post.findByIdAndDelete(req.params.id);
-    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
-
+    const post = await Post.findById(req.params.id);
+    
+    if (!post) {
+      return res.status(404).json({ message: 'Post introuvable.' });
+    }
+    
+    // 🔒 Vérification : seul l'auteur peut supprimer
+    if (post.authorId !== req.user.uid) {
+      return res.status(403).json({ message: 'Vous ne pouvez supprimer que vos propres textes.' });
+    }
+    
+    await Post.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Post supprimé avec succès.', id: req.params.id });
+    
+  } catch (err) {
+    console.error('DELETE error:', err);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+});
     // Suppression en cascade des commentaires
     await Comment.deleteMany({ postId: req.params.id });
 
