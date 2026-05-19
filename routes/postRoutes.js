@@ -51,7 +51,6 @@ router.post('/:id/view', async (req, res) => {
     );
     if (!post) return res.status(404).json({ message: 'Post introuvable.' });
 
-    // Broadcast views via WebSocket
     const io = req.app.get('io');
     if (io) io.to('post_' + req.params.id).emit('view_update', { postId: req.params.id, views: post.views });
 
@@ -70,39 +69,35 @@ router.post('/:id/react', async (req, res) => {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: 'Post introuvable.' });
 
-    const reactions    = post.reactions || new Map();
-    const reactors     = post.reactors  || new Map();
-    const userKey      = uid + '_' + emoji;
-    const hasReacted   = (reactors.get ? reactors.get(userKey) : reactors[userKey]) || false;
+    // Initialiser les objets si inexistants
+    if (!post.reactions) post.reactions = {};
+    if (!post.reactors) post.reactors = {};
+
+    const userKey = uid + '_' + emoji;
+    const hasReacted = post.reactors[userKey] || false;
 
     if (hasReacted) {
-      const count = Math.max(0, (reactions.get ? reactions.get(emoji) : reactions[emoji] || 0) - 1);
-      post.reactions.set(emoji, count);
-      post.reactors.set(userKey, false);
+      post.reactions[emoji] = Math.max(0, (post.reactions[emoji] || 0) - 1);
+      post.reactors[userKey] = false;
     } else {
-      const count = (reactions.get ? reactions.get(emoji) : reactions[emoji] || 0) + 1;
-      post.reactions.set(emoji, count);
-      post.reactors.set(userKey, true);
+      post.reactions[emoji] = (post.reactions[emoji] || 0) + 1;
+      post.reactors[userKey] = true;
     }
 
     await post.save();
 
-    const reactionsObj = {};
-    post.reactions.forEach((v, k) => { reactionsObj[k] = v; });
-
-    // Broadcast réactions via WebSocket
     const io = req.app.get('io');
     if (io) {
       io.to('post_' + req.params.id).emit('reaction_update', {
         postId: req.params.id,
-        reactions: reactionsObj,
+        reactions: post.reactions,
         emoji, uid, reacted: !hasReacted
       });
-      io.emit('reaction_update_global', { postId: req.params.id, reactions: reactionsObj });
     }
 
-    res.json({ reactions: reactionsObj, reacted: !hasReacted });
+    res.json({ reactions: post.reactions, reacted: !hasReacted });
   } catch (err) {
+    console.error('React error:', err);
     res.status(500).json({ message: 'Erreur.' });
   }
 });
@@ -114,9 +109,18 @@ router.post('/', protect, async (req, res) => {
     if (!title || !author || !category || !summary || !content) {
       return res.status(400).json({ message: 'Champs obligatoires manquants.' });
     }
-    const post = await Post.create({ title, author, category, summary, content, publishedAt });
+    
+    const post = await Post.create({ 
+      title, 
+      author, 
+      authorId: req.admin.uid,  // ← Utilise req.admin
+      authorEmail: req.admin.email,
+      category, 
+      summary, 
+      content, 
+      publishedAt 
+    });
 
-    // Broadcast nouveau post
     const io = req.app.get('io');
     if (io) io.emit('post_published', { post });
 
@@ -130,13 +134,22 @@ router.post('/', protect, async (req, res) => {
 router.put('/:id', protect, async (req, res) => {
   try {
     const { title, author, category, summary, content, publishedAt } = req.body;
-    const post = await Post.findByIdAndUpdate(
+    
+    const post = await Post.findById(req.params.id);
+    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
+    
+    // Vérification avec req.admin
+    if (post.authorId !== req.admin.uid) {
+      return res.status(403).json({ message: 'Vous ne pouvez modifier que vos propres posts.' });
+    }
+    
+    const updated = await Post.findByIdAndUpdate(
       req.params.id,
       { title, author, category, summary, content, publishedAt },
       { new: true, runValidators: true }
     );
-    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
-    res.json(post);
+    
+    res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.' });
   }
@@ -151,28 +164,25 @@ router.delete('/:id', protect, async (req, res) => {
       return res.status(404).json({ message: 'Post introuvable.' });
     }
     
-    // 🔒 Vérification : seul l'auteur peut supprimer
-    if (post.authorId !== req.user.uid) {
+    // 🔒 Vérification avec req.admin (pas req.user)
+    if (post.authorId !== req.admin.uid) {
       return res.status(403).json({ message: 'Vous ne pouvez supprimer que vos propres textes.' });
     }
     
-    await Post.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Post supprimé avec succès.', id: req.params.id });
-    
-  } catch (err) {
-    console.error('DELETE error:', err);
-    res.status(500).json({ message: 'Erreur serveur.' });
-  }
-});
     // Suppression en cascade des commentaires
     await Comment.deleteMany({ postId: req.params.id });
-
+    
+    // Suppression du post
+    await Post.findByIdAndDelete(req.params.id);
+    
     // Broadcast suppression
     const io = req.app.get('io');
     if (io) io.emit('post_deleted', { postId: req.params.id });
-
-    res.json({ message: 'Post et commentaires supprimés.' });
+    
+    res.json({ message: 'Post et commentaires supprimés avec succès.', id: req.params.id });
+    
   } catch (err) {
+    console.error('DELETE error:', err);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
