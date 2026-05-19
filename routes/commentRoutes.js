@@ -1,144 +1,147 @@
 /**
  * routes/commentRoutes.js
- * Commentaires style TikTok — likes, réponses, suppression en cascade
+ * Commentaires + réponses + likes + suppression
  */
 const express = require('express');
 const Comment = require('../models/Comment');
-const Post    = require('../models/Post');
 const { protect } = require('../middleware/authMiddleware');
-const { protectUser } = require('../middleware/userMiddleware');
 
 const router = express.Router();
 
-/* ── GET commentaires d'un post ── */
+/* ── GET tous les commentaires d'un post ── */
 router.get('/:postId', async (req, res) => {
   try {
-    const comments = await Comment.find({ postId: req.params.postId })
-      .sort({ createdAt: 1 })
-      .select('-email -replies.email');
+    const comments = await Comment.find({ postId: req.params.postId, parentId: null })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Charger les réponses pour chaque commentaire
+    for (let comment of comments) {
+      comment.replies = await Comment.find({ parentId: comment._id }).sort({ createdAt: 1 }).lean();
+    }
+
     res.json(comments);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.' });
+    res.status(500).json({ message: 'Erreur chargement commentaires.' });
   }
 });
 
-/* ── POST ajouter un commentaire ── */
-router.post('/:postId', protectUser, async (req, res) => {
-  const { content } = req.body;
-  if (!content?.trim()) return res.status(400).json({ message: 'Commentaire vide.' });
-  if (content.length > 1000) return res.status(400).json({ message: 'Trop long (1000 max).' });
-
+/* ── POST créer un commentaire ── */
+router.post('/:postId', protect, async (req, res) => {
   try {
+    const { content } = req.body;
+    if (!content) return res.status(400).json({ message: 'Contenu requis.' });
+
     const comment = await Comment.create({
-      postId:  req.params.postId,
-      author:  req.user.name,
-      email:   req.user.email,
-      uid:     req.user.uid,
-      content: content.trim(),
+      postId: req.params.postId,
+      content,
+      author: req.admin.name || req.admin.email.split('@')[0],
+      authorId: req.admin.uid,
+      authorAvatar: req.admin.avatar || null,
+      parentId: null
     });
 
-    // Broadcast WebSocket
+    const populated = await Comment.findById(comment._id).lean();
+
     const io = req.app.get('io');
     if (io) {
-      const safe = comment.toObject();
-      delete safe.email;
-      io.to('post_' + req.params.postId).emit('comment_added', safe);
+      io.to(`post_${req.params.postId}`).emit('comment_added', populated);
     }
 
-    const safe = comment.toObject();
-    delete safe.email;
-    res.status(201).json(safe);
+    res.status(201).json(populated);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.' });
+    console.error('Comment error:', err);
+    res.status(500).json({ message: 'Erreur création commentaire.' });
+  }
+});
+
+/* ── POST répondre à un commentaire ── */
+router.post('/:commentId/reply', protect, async (req, res) => {
+  try {
+    const { content } = req.body;
+    const parentComment = await Comment.findById(req.params.commentId);
+    if (!parentComment) return res.status(404).json({ message: 'Commentaire parent introuvable.' });
+
+    const reply = await Comment.create({
+      postId: parentComment.postId,
+      content,
+      author: req.admin.name || req.admin.email.split('@')[0],
+      authorId: req.admin.uid,
+      authorAvatar: req.admin.avatar || null,
+      parentId: req.params.commentId
+    });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`post_${parentComment.postId}`).emit('reply_added', {
+        commentId: req.params.commentId,
+        reply
+      });
+    }
+
+    res.status(201).json(reply);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur création réponse.' });
   }
 });
 
 /* ── POST liker un commentaire ── */
-router.post('/:id/like', protectUser, async (req, res) => {
+router.post('/:commentId/like', protect, async (req, res) => {
   try {
-    const comment = await Comment.findById(req.params.id);
-    if (!comment) return res.status(404).json({ message: 'Introuvable.' });
-
-    const uid    = req.user.uid;
-    const liked  = comment.likedBy.includes(uid);
-
-    if (liked) {
-      comment.likedBy.pull(uid);
-      comment.likes = Math.max(0, comment.likes - 1);
-    } else {
-      comment.likedBy.push(uid);
-      comment.likes++;
-    }
-    await comment.save();
-
-    // Broadcast
-    const io = req.app.get('io');
-    if (io) {
-      io.to('post_' + comment.postId).emit('comment_liked', {
-        commentId: comment._id, likes: comment.likes, liked: !liked, uid
-      });
-    }
-
-    res.json({ likes: comment.likes, liked: !liked });
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur.' });
-  }
-});
-
-/* ── POST ajouter une réponse ── */
-router.post('/:id/reply', protectUser, async (req, res) => {
-  const { content } = req.body;
-  if (!content?.trim()) return res.status(400).json({ message: 'Réponse vide.' });
-
-  try {
-    const comment = await Comment.findById(req.params.id);
+    const comment = await Comment.findById(req.params.commentId);
     if (!comment) return res.status(404).json({ message: 'Commentaire introuvable.' });
 
-    const reply = {
-      author:  req.user.name,
-      email:   req.user.email,
-      uid:     req.user.uid,
-      content: content.trim(),
-    };
+    if (!comment.likedBy) comment.likedBy = [];
 
-    comment.replies.push(reply);
+    const hasLiked = comment.likedBy.includes(req.admin.uid);
+    if (hasLiked) {
+      comment.likedBy = comment.likedBy.filter(id => id !== req.admin.uid);
+      comment.likes = Math.max(0, (comment.likes || 0) - 1);
+    } else {
+      comment.likedBy.push(req.admin.uid);
+      comment.likes = (comment.likes || 0) + 1;
+    }
+
     await comment.save();
 
-    const saved = comment.replies[comment.replies.length - 1].toObject();
-    delete saved.email;
-
-    // Broadcast
     const io = req.app.get('io');
     if (io) {
-      io.to('post_' + comment.postId).emit('reply_added', {
-        commentId: comment._id, reply: saved
+      io.to(`post_${comment.postId}`).emit('comment_liked', {
+        commentId: req.params.commentId,
+        likes: comment.likes,
+        uid: req.admin.uid,
+        liked: !hasLiked
       });
     }
 
-    res.status(201).json(saved);
+    res.json({ likes: comment.likes, liked: !hasLiked });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur.' });
+    res.status(500).json({ message: 'Erreur like.' });
   }
 });
 
-/* ── DELETE supprimer un commentaire (admin) ── */
-router.delete('/:id', protect, async (req, res) => {
+/* ── DELETE supprimer un commentaire (admin ou auteur) ── */
+router.delete('/:commentId', protect, async (req, res) => {
   try {
-    const comment = await Comment.findByIdAndDelete(req.params.id);
-    if (!comment) return res.status(404).json({ message: 'Introuvable.' });
-    res.json({ message: 'Supprimé.' });
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur.' });
-  }
-});
+    const comment = await Comment.findById(req.params.commentId);
+    if (!comment) return res.status(404).json({ message: 'Commentaire introuvable.' });
 
-/* ── DELETE supprimer tous les commentaires d'un post (cascade) ── */
-router.delete('/post/:postId', protect, async (req, res) => {
-  try {
-    await Comment.deleteMany({ postId: req.params.postId });
-    res.json({ message: 'Commentaires supprimés.' });
+    if (comment.authorId !== req.admin.uid && !req.admin.isSuperAdmin) {
+      return res.status(403).json({ message: 'Non autorisé.' });
+    }
+
+    // Supprimer aussi les réponses
+    await Comment.deleteMany({ parentId: req.params.commentId });
+    await Comment.findByIdAndDelete(req.params.commentId);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`post_${comment.postId}`).emit('comment_deleted', { commentId: req.params.commentId });
+    }
+
+    res.json({ message: 'Commentaire supprimé.' });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur.' });
+    res.status(500).json({ message: 'Erreur suppression.' });
   }
 });
 
