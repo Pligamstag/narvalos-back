@@ -1,15 +1,15 @@
 /**
  * routes/postRoutes.js
- * CRUD posts + suppression en cascade + vues uniques
+ * CRUD posts + réactions temps réel + vues
  */
 const express = require('express');
-const Post    = require('../models/Post');
+const Post = require('../models/Post');
 const Comment = require('../models/Comment');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-/* ── GET tous les posts ── */
+/* ── GET tous les posts (public) ── */
 router.get('/', async (req, res) => {
   try {
     const { page = 1, limit = 9, category, sort = '-publishedAt' } = req.query;
@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-/* ── GET un post par ID + incrémenter les vues ── */
+/* ── GET un post par ID ── */
 router.get('/:id', async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -41,7 +41,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-/* ── POST incrémenter les vues (vue unique par session) ── */
+/* ── POST incrémenter les vues ── */
 router.post('/:id/view', async (req, res) => {
   try {
     const post = await Post.findByIdAndUpdate(
@@ -52,7 +52,7 @@ router.post('/:id/view', async (req, res) => {
     if (!post) return res.status(404).json({ message: 'Post introuvable.' });
 
     const io = req.app.get('io');
-    if (io) io.to('post_' + req.params.id).emit('view_update', { postId: req.params.id, views: post.views });
+    if (io) io.to(`post_${req.params.id}`).emit('view_update', { postId: req.params.id, views: post.views });
 
     res.json({ views: post.views });
   } catch (err) {
@@ -60,7 +60,7 @@ router.post('/:id/view', async (req, res) => {
   }
 });
 
-/* ── POST ajouter/retirer une réaction ── */
+/* ── POST réaction (temps réel) ── */
 router.post('/:id/react', async (req, res) => {
   const { emoji, uid } = req.body;
   if (!emoji || !uid) return res.status(400).json({ message: 'Données manquantes.' });
@@ -69,11 +69,10 @@ router.post('/:id/react', async (req, res) => {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: 'Post introuvable.' });
 
-    // Initialiser les objets si inexistants
     if (!post.reactions) post.reactions = {};
     if (!post.reactors) post.reactors = {};
 
-    const userKey = uid + '_' + emoji;
+    const userKey = `${uid}_${emoji}`;
     const hasReacted = post.reactors[userKey] || false;
 
     if (hasReacted) {
@@ -88,10 +87,12 @@ router.post('/:id/react', async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.to('post_' + req.params.id).emit('reaction_update', {
+      io.to(`post_${req.params.id}`).emit('reaction_update', {
         postId: req.params.id,
         reactions: post.reactions,
-        emoji, uid, reacted: !hasReacted
+        emoji,
+        uid,
+        reacted: !hasReacted
       });
     }
 
@@ -106,19 +107,17 @@ router.post('/:id/react', async (req, res) => {
 router.post('/', protect, async (req, res) => {
   try {
     const { title, author, category, summary, content, publishedAt } = req.body;
-    if (!title || !author || !category || !summary || !content) {
-      return res.status(400).json({ message: 'Champs obligatoires manquants.' });
-    }
-    
-    const post = await Post.create({ 
-      title, 
-      author, 
-      authorId: req.admin.uid,  // ← Utilise req.admin
+
+    const post = await Post.create({
+      title,
+      author,
+      authorId: req.admin.uid,
       authorEmail: req.admin.email,
-      category, 
-      summary, 
-      content, 
-      publishedAt 
+      authorAvatar: req.admin.avatar || null,
+      category,
+      summary,
+      content,
+      publishedAt: publishedAt || new Date()
     });
 
     const io = req.app.get('io');
@@ -126,61 +125,49 @@ router.post('/', protect, async (req, res) => {
 
     res.status(201).json(post);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    console.error('Create post error:', err);
+    res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
 
 /* ── PUT modifier un post ── */
 router.put('/:id', protect, async (req, res) => {
   try {
-    const { title, author, category, summary, content, publishedAt } = req.body;
-    
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: 'Post introuvable.' });
-    
-    // Vérification avec req.admin
     if (post.authorId !== req.admin.uid) {
       return res.status(403).json({ message: 'Vous ne pouvez modifier que vos propres posts.' });
     }
-    
+
+    const { title, author, category, summary, content, publishedAt } = req.body;
     const updated = await Post.findByIdAndUpdate(
       req.params.id,
       { title, author, category, summary, content, publishedAt },
       { new: true, runValidators: true }
     );
-    
+
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 });
 
-/* ── DELETE supprimer un post + ses commentaires (cascade) ── */
+/* ── DELETE supprimer un post + commentaires ── */
 router.delete('/:id', protect, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
-    
-    if (!post) {
-      return res.status(404).json({ message: 'Post introuvable.' });
-    }
-    
-    // 🔒 Vérification avec req.admin (pas req.user)
+    if (!post) return res.status(404).json({ message: 'Post introuvable.' });
     if (post.authorId !== req.admin.uid) {
-      return res.status(403).json({ message: 'Vous ne pouvez supprimer que vos propres textes.' });
+      return res.status(403).json({ message: 'Vous ne pouvez supprimer que vos propres posts.' });
     }
-    
-    // Suppression en cascade des commentaires
+
     await Comment.deleteMany({ postId: req.params.id });
-    
-    // Suppression du post
     await Post.findByIdAndDelete(req.params.id);
-    
-    // Broadcast suppression
+
     const io = req.app.get('io');
     if (io) io.emit('post_deleted', { postId: req.params.id });
-    
-    res.json({ message: 'Post et commentaires supprimés avec succès.', id: req.params.id });
-    
+
+    res.json({ message: 'Post et commentaires supprimés.', id: req.params.id });
   } catch (err) {
     console.error('DELETE error:', err);
     res.status(500).json({ message: 'Erreur serveur.' });
